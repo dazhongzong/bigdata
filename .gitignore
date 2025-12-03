@@ -1,0 +1,3 @@
+# 忽略.xlsx
+*.xlsx
+config.json

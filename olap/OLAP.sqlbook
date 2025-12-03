@@ -1,0 +1,518 @@
+-- SQLBook: Markup
+ROLL-UP
+-- SQLBook: Code
+-- 事实表与日期维表，按“年+季度”聚合，汇总销售额  ROLL-UP1
+SELECT
+  dr.Year AS 年份,
+  CASE WHEN dr.Month IN (1,2,3) THEN 'Q1'
+       WHEN dr.Month IN (4,5,6) THEN 'Q2'
+       WHEN dr.Month IN (7,8,9) THEN 'Q3'
+       ELSE 'Q4' END AS 季度,
+  SUM(fact.Price) AS 季度总销售额,
+  COUNT(DISTINCT fact.TicketID) AS 季度总航班量
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID  -- 关联出发日期维表
+WHERE dr.Year = 2021  -- 限定年份
+GROUP BY dr.Year,  -- 上卷维度1：年
+         CASE WHEN dr.Month IN (1,2,3) THEN 'Q1'  -- 上卷维度2：季度（将月聚合为季度）
+              WHEN dr.Month IN (4,5,6) THEN 'Q2'
+              WHEN dr.Month IN (7,8,9) THEN 'Q3'
+              ELSE 'Q4' END
+ORDER BY 年份, 季度;
+-- SQLBook: Code
+-- 关联事实表与机场维表，按“城市”聚合，汇总飞行里程 ROLLUP
+SELECT
+  a.city AS 出发城市,
+  SUM(fact.mileage) AS 城市总飞行里程,
+  COUNT(DISTINCT fact.MEMBER_NO) AS 城市总乘客数
+FROM [dbo].[Fact_FlightTicket] fact
+JOIN DW_Dim_Airport a ON fact.Departure_airportID = a.AirportID  -- 关联出发机场维表
+GROUP BY a.city  -- 上卷维度：将“机场”聚合为“城市”
+HAVING SUM(fact.mileage) > 100000  -- 筛选总里程超10万的城市
+ORDER BY 城市总飞行里程 DESC;
+-- SQLBook: Code
+-- 关联事实表与乘客维表，按“年龄段”聚合（上卷），统计核心指标 ROLLUP
+SELECT
+  -- 把细粒度的“具体年龄”上卷为粗粒度的“年龄段”
+  CASE 
+    WHEN ps.PassengerAge <= 20 THEN '20岁及以下（学生/青少年）'
+    WHEN ps.PassengerAge BETWEEN 21 AND 30 THEN '21-30岁（年轻职场人）'
+    WHEN ps.PassengerAge BETWEEN 31 AND 45 THEN '31-45岁（核心商务人群）'
+    WHEN ps.PassengerAge BETWEEN 46 AND 60 THEN '46-60岁（中年消费人群）'
+    ELSE '60岁以上（老年出行人群）' 
+  END AS 乘客年龄段,
+  SUM(fact.mileage) AS 年龄段总飞行里程,  -- 该年龄段累计里程
+  AVG(fact.Price) AS 年龄段平均客单价,     -- 该年龄段平均机票消费
+  COUNT(DISTINCT ps.PassengerID) AS 年龄段乘客数  -- 该年龄段独立乘客数
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_Passenger ps ON fact.MEMBER_NO = ps.PassengerID  -- 关联乘客维表获取年龄
+JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID  -- 限定2021年数据（增强业务场景）
+WHERE dr.Year = 2021  -- 聚焦2021年出行数据
+GROUP BY 
+  -- 上卷核心：按聚合后的“年龄段”分组（替代按具体年龄分组）
+  CASE 
+    WHEN ps.PassengerAge <= 20 THEN '20岁及以下（学生/青少年）'
+    WHEN ps.PassengerAge BETWEEN 21 AND 30 THEN '21-30岁（年轻职场人）'
+    WHEN ps.PassengerAge BETWEEN 31 AND 45 THEN '31-45岁（核心商务人群）'
+    WHEN ps.PassengerAge BETWEEN 46 AND 60 THEN '46-60岁（中年消费人群）'
+    ELSE '60岁以上（老年出行人群）' 
+  END
+ORDER BY 年龄段总飞行里程 DESC;
+-- SQLBook: Code
+-- 关联事实表与日期维表，按“年+月+日”拆分，细化到每日数据 DRILL DOWN
+SELECT
+  dr.Year AS 年份,
+  dr.Month AS 月份,
+  dr.Date AS 日期,  -- 细粒度：具体日期
+  SUM(fact.Price) AS 当日销售额,
+  COUNT(DISTINCT fact.TicketID) AS 当日航班量
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+WHERE dr.Year = 2021 AND dr.Month = 3  -- 限定粗粒度：2021年3月
+GROUP BY dr.Year, dr.Month, dr.Date  -- 钻取：增加“日期”维度，拆分到每日
+ORDER BY dr.Date;
+-- SQLBook: Code
+-- 关联事实表、机场维表、机票维表，按“城市+机场+航班号”拆分 DRILL DOWN
+SELECT
+  a.city AS 出发城市,
+  a.airportCode AS 出发机场代码,  -- 细粒度1：具体机场
+  t.FlightNo AS 航班号,  -- 细粒度2：具体航班号
+  COUNT(DISTINCT fact.TicketID) AS 航班执行次数
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_Airport a ON fact.Departure_airportID = a.AirportID
+JOIN DW_Dim_ticket t ON fact.TicketID = t.TicketID  -- 关联机票维表获取航班号
+WHERE a.city = '北京'  -- 限定粗粒度：北京市
+GROUP BY a.city, a.airportCode, t.FlightNo  -- 钻取：增加“机场+航班号”维度
+ORDER BY 航班执行次数 DESC;
+-- SQLBook: Code
+-- DRILL DOWN
+SELECT
+  CASE 
+    WHEN s.CabinClass IN ('F', 'C') THEN '高端舱位（F头等舱+C商务舱）'
+    WHEN s.CabinClass = 'Y' THEN '经济舱（Y）'
+    ELSE '其他舱位' 
+  END AS 舱位大类,
+  SUM(fact.Price) AS 大类总销售额,
+  AVG(fact.Rate) AS 大类平均折扣率,
+  COUNT(DISTINCT fact.TicketID) AS 大类航班量,
+  -- 核心修正：CAST转为浮点型
+  ROUND(
+    CAST(SUM(fact.Price) AS FLOAT) / CAST(SUM(SUM(fact.Price)) OVER() AS FLOAT) * 100, 
+    2
+  ) AS [营收占比(%)]
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID
+JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+WHERE dr.Year = 2021
+GROUP BY 
+  CASE 
+    WHEN s.CabinClass IN ('F', 'C') THEN '高端舱位（F头等舱+C商务舱）'
+    WHEN s.CabinClass = 'Y' THEN '经济舱（Y）'
+    ELSE '其他舱位' 
+  END
+ORDER BY 大类总销售额 DESC;
+-- SQLBook: Markup
+SLICE
+-- SQLBook: Code
+-- 春运期间在成都双流中转  SLICE
+WITH Chunyun2021 AS (
+    SELECT DateRangeID FROM DW_Dim_DateRange WHERE Date BETWEEN '2021-01-28' AND '2021-03-08'
+)
+SELECT
+    a_dep.city AS 出发城市,
+    a_arr.city AS 到达城市,
+    SUM(fact.Price) AS 中转营收,
+    COUNT(DISTINCT fact.MEMBER_NO) AS 中转乘客数,
+    ROUND(COUNT(DISTINCT fact.MEMBER_NO)*1.0/p.SeatNum*100,2) AS [中转客座率(%)]
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_Airport a_dep ON fact.Departure_airportID = a_dep.AirportID
+JOIN DW_Dim_Airport a_trans ON fact.Transit_airportID = a_trans.AirportID
+JOIN DW_Dim_Airport a_arr ON fact.Landing_airportID = a_arr.AirportID
+JOIN DW_Dim_Plane p ON fact.planeID = p.PlaneID
+JOIN Chunyun2021 cy ON fact.departureDateID = cy.DateRangeID
+WHERE a_trans.airportCode='CTU' AND fact.Transit_airportID <> -1  -- 切片：固定中转机场=成都双流
+GROUP BY a_dep.city, a_arr.city, p.SeatNum
+ORDER BY 中转营收 DESC;
+-- SQLBook: Code
+WITH Chunyun2021 AS (
+    SELECT DateRangeID FROM DW_Dim_DateRange WHERE Date BETWEEN '2021-01-28' AND '2021-03-08'
+),
+-- 步骤1：统计单个航班（航班号+出发日期）的核心指标（确保客座率≤100%）
+FlightLevelData AS (
+    SELECT
+        t.FlightNo AS 航班号,          -- 新增：锁定单个航班
+        dr.Date AS 出发日期,           -- 新增：锁定单个航班日期
+        a_dep.city AS 出发城市,
+        p.SeatNum AS 机型座位数,
+        COUNT(DISTINCT fact.MEMBER_NO) AS 航班客流,  -- 单个航班的独立乘客数
+        -- 单个航班客座率（≤100%），处理除数为0
+        ROUND(
+            CASE WHEN p.SeatNum = 0 THEN 0
+                 ELSE COUNT(DISTINCT fact.MEMBER_NO) * 1.0 / p.SeatNum * 100
+            END,
+            2
+        ) AS [航班客座率(%)]
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID
+    JOIN DW_Dim_Airport a_dep ON fact.Departure_airportID = a_dep.AirportID
+    JOIN DW_Dim_Plane p ON fact.planeID = p.PlaneID
+    JOIN DW_Dim_ticket t ON fact.TicketID = t.TicketID  -- 关联机票表获取航班号
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID  -- 关联日期表获取具体日期
+    JOIN Chunyun2021 cy ON fact.departureDateID = cy.DateRangeID
+    WHERE s.CabinClass='Y'  -- 经济舱
+    GROUP BY t.FlightNo, dr.Date, a_dep.city, p.SeatNum  -- 核心：按单个航班+日期分组
+),
+-- 步骤2：聚合到出发城市维度（避免客座率超100%）
+CityLevelData AS (
+    SELECT
+        出发城市,
+        SUM(航班客流) AS 总客流,  -- 城市维度总客流
+        AVG([航班客座率(%)]) AS [平均客座率(%)]  -- 城市维度取平均客座率（更贴合业务）
+        -- 可选：若需“合计客座率”，用 SUM(航班客流)/SUM(机型座位数)*100
+        -- ROUND(SUM(航班客流)*1.0/SUM(机型座位数)*100,2) AS 合计客座率(%)
+    FROM FlightLevelData
+    GROUP BY 出发城市
+)
+-- 最终输出：出发城市的春运核心指标（客座率≤100%）
+SELECT
+    出发城市,
+    总客流 AS 客流,
+    ROUND([平均客座率(%)],2) AS [客座率(%)]
+FROM CityLevelData
+ORDER BY 客流 DESC;
+-- SQLBook: Code
+-- SLICE 
+SELECT
+    a_arr.city AS 到达城市,
+    AVG(fact.Price) AS 平均客单价,
+    COUNT(DISTINCT fact.MEMBER_NO) AS 高端乘客数
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID
+JOIN DW_Dim_Airport a_arr ON fact.Landing_airportID = a_arr.AirportID
+JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+WHERE dr.Year=2021 AND s.CabinClass IN ('F','C')  -- 切片：高端舱位
+GROUP BY a_arr.city
+ORDER BY 平均客单价 DESC;
+-- SQLBook: Markup
+Dice
+-- SQLBook: Code
+WITH Q12021 AS (
+    -- 精准限定2021年Q1（1-3月）
+    SELECT DateRangeID 
+    FROM DW_Dim_DateRange 
+    WHERE Year=2021 AND DATEPART(QUARTER, Date)=1
+),
+-- 标准化省份/直辖市名称（仅去空格，不过滤）
+NormalizedAirport AS (
+    SELECT 
+        AirportID,
+        TRIM(city) AS standard_province  -- 统一为“省份/直辖市”格式，去空格
+    FROM DW_Dim_Airport
+    WHERE TRIM(city) <> ''  -- 仅过滤空值
+)
+SELECT
+    -- 生成“省份/直辖市→省份/直辖市”格式的航线
+    CONCAT(dep.standard_province,'→',arr.standard_province) AS 航线,
+    SUM(fact.Price) AS 营收,
+    -- 处理delayTime NULL值，避免AVG计算异常
+    ROUND(AVG(ISNULL(t.delayTime, 0)), 2) AS 平均延误时长,
+    COUNT(DISTINCT fact.MEMBER_NO) AS 乘客数,  -- 补充客流维度
+    COUNT(DISTINCT fact.TicketID) AS 订单数    -- 补充订单维度
+FROM Fact_FlightTicket fact
+-- 仅关联经济舱
+JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID AND s.CabinClass = 'Y'
+-- 关联标准化后的出发/到达省份（适配表中仅存省份/直辖市的特征）
+JOIN NormalizedAirport dep ON fact.Departure_airportID = dep.AirportID
+JOIN NormalizedAirport arr ON fact.Landing_airportID = arr.AirportID
+-- 关联机票表获取延误时长
+JOIN DW_Dim_ticket t ON fact.TicketID = t.TicketID
+JOIN Q12021 q2 ON fact.departureDateID = q2.DateRangeID
+WHERE 
+    -- 筛选核心出发省份/直辖市：上海（直辖市）、广东（广州所属省）
+    dep.standard_province IN ('上海','广东')
+    -- 低延误率条件：延误时长<10（包含0值，适配随机数据特征）
+    AND ISNULL(t.delayTime, 0) < 10
+GROUP BY CONCAT(dep.standard_province,'→',arr.standard_province)
+-- 过滤营收为0的无效航线（随机数据可能产生）
+HAVING SUM(fact.Price) > 0
+ORDER BY 营收 DESC;
+-- SQLBook: Code
+WITH Q2021 AS (
+    SELECT DateRangeID FROM DW_Dim_DateRange WHERE Year=2021
+)
+SELECT
+    CONCAT(a_dep.city,'→',a_trans.city,'→',a_arr.city) AS 中转航线,
+    COUNT(DISTINCT fact.TicketID) AS 航班量,
+    ROUND(COUNT(DISTINCT fact.MEMBER_NO)*1.0/p.SeatNum*100,2) AS [客座率(%)]
+FROM Fact_FlightTicket fact
+JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID
+JOIN DW_Dim_Airport a_dep ON fact.Departure_airportID = a_dep.AirportID
+JOIN DW_Dim_Airport a_trans ON fact.Transit_airportID = a_trans.AirportID
+JOIN DW_Dim_Airport a_arr ON fact.Landing_airportID = a_arr.AirportID
+JOIN DW_Dim_ticket t ON fact.TicketID = t.TicketID
+JOIN DW_Dim_Plane p ON fact.planeID = p.PlaneID
+JOIN Q22021 q2 ON fact.departureDateID = q2.DateRangeID
+WHERE 
+    a_trans.city='上海'  -- 条件1：上海中转
+    AND s.CabinClass='Y'  -- 条件2：经济舱
+    AND fact.Transit_airportID <> -1
+GROUP BY CONCAT(a_dep.city,'→',a_trans.city,'→',a_arr.city), p.SeatNum
+ORDER BY [客座率(%)] ASC;
+-- SQLBook: Code
+WITH Summer2021 AS (
+    -- 2021年暑运（7-8月）日期范围
+    SELECT DateRangeID 
+    FROM DW_Dim_DateRange 
+    WHERE Year=2021 AND Month BETWEEN 7 AND 8
+),
+-- 步骤1：统计单趟航班（航班号+日期）的基础指标
+SingleFlightData AS (
+    SELECT
+        t.FlightNo AS 航班号,
+        dr.Date AS 出发日期,
+        SUM(fact.Price) AS 单航班营收,          -- 单趟航班营收
+        COUNT(DISTINCT fact.TicketID) AS 单航班订单数,  -- 单趟航班订单数
+        COUNT(DISTINCT fact.MEMBER_NO) AS 单航班高端乘客数  -- 单趟航班高端舱乘客数
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID
+    JOIN DW_Dim_Airport a_dep ON fact.Departure_airportID = a_dep.AirportID
+    JOIN DW_Dim_ticket t ON fact.TicketID = t.TicketID
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    JOIN Summer2021 sm ON fact.departureDateID = sm.DateRangeID
+    WHERE 
+        s.CabinClass IN ('F','C')  -- 高端舱位（F/C）
+        AND a_dep.city IN ('四川','重庆')  -- 西南出发地区
+    GROUP BY t.FlightNo, dr.Date  -- 按单趟航班（航班号+日期）分组
+),
+-- 步骤2：聚合航班号维度，计算核心业务指标
+FlightAggData AS (
+    SELECT
+        航班号,
+        SUM(单航班营收) AS 总营收,                -- 该航班号暑运总营收
+        SUM(单航班订单数) AS 总订单数,            -- 该航班号总订单量
+        COUNT(DISTINCT 出发日期) AS 航班执行次数,  -- 该航班号暑运执行趟数
+        COUNT(DISTINCT 单航班高端乘客数) AS 累计高端乘客数,  -- 累计高端乘客总量
+        -- 平均客单价（处理订单数为0的情况，避免除以0）
+        ROUND(
+            CASE WHEN SUM(单航班订单数) = 0 THEN 0
+                 ELSE SUM(单航班营收) * 1.0 / SUM(单航班订单数)
+            END,
+            2
+        ) AS 平均客单价,
+        -- 平均单航班营收
+        ROUND(
+            CASE WHEN COUNT(DISTINCT 出发日期) = 0 THEN 0
+                 ELSE SUM(单航班营收) * 1.0 / COUNT(DISTINCT 出发日期)
+            END,
+            2
+        ) AS 平均单航班营收
+    FROM SingleFlightData
+    GROUP BY 航班号
+)
+-- 最终结果：核心业务指标（无客座率，无超界风险）
+SELECT
+    航班号,
+    总营收,
+    总订单数,
+    航班执行次数,
+    累计高端乘客数,
+    平均客单价,
+    平均单航班营收
+FROM FlightAggData
+ORDER BY 总营收 DESC;
+-- SQLBook: Markup
+Rank
+-- SQLBook: Code
+WITH CitySales AS (
+    SELECT
+        a_dep.city AS 出发城市,
+        SUM(fact.Price) AS [2021总营收]
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_Airport a_dep ON fact.Departure_airportID = a_dep.AirportID
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    WHERE dr.Year=2021
+    GROUP BY a_dep.city
+)
+SELECT
+    出发城市,
+    [2021总营收],
+    RANK() OVER (ORDER BY [2021总营收] DESC) AS 营收排名
+FROM CitySales
+ORDER BY 营收排名;
+-- SQLBook: Code
+WITH ModelStats AS (
+    SELECT
+        p.planeModel AS 机型,
+        p.SeatNum AS 机型单架座位数,  -- 单架该机型的座位数
+        COUNT(DISTINCT fact.MEMBER_NO) AS 机型总独立乘客数,  -- 该机型2021年累计客流
+        SUM(fact.Price) AS 机型总营收,  -- 该机型2021年总营收
+        COUNT(DISTINCT CONCAT(t.FlightNo, '_', dr.Date)) AS 机型执行航班次数,  -- 该机型执飞趟数（航班号+日期唯一）
+        -- 平均每架次乘客数（处理执飞次数为0的情况）
+        ROUND(
+            CASE WHEN COUNT(DISTINCT CONCAT(t.FlightNo, '_', dr.Date)) = 0 THEN 0
+                 ELSE COUNT(DISTINCT fact.MEMBER_NO) * 1.0 / COUNT(DISTINCT CONCAT(t.FlightNo, '_', dr.Date))
+            END,
+            2
+        ) AS 平均单架次乘客数,
+        -- 机型平均营收（处理执飞次数为0的情况）
+        ROUND(
+            CASE WHEN COUNT(DISTINCT CONCAT(t.FlightNo, '_', dr.Date)) = 0 THEN 0
+                 ELSE SUM(fact.Price) * 1.0 / COUNT(DISTINCT CONCAT(t.FlightNo, '_', dr.Date))
+            END,
+            2
+        ) AS 平均单架次营收
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_Plane p ON fact.planeID = p.PlaneID
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    JOIN DW_Dim_ticket t ON fact.TicketID = t.TicketID  -- 关联机票表获取航班号
+    WHERE dr.Year=2021  -- 2021年数据
+    GROUP BY p.planeModel, p.SeatNum  -- 按机型+单架座位数分组
+)
+-- 最终输出：机型核心业务指标（无客座率、无排名）
+SELECT
+    机型,
+    机型单架座位数,
+    机型总独立乘客数,
+    机型总营收,
+    机型执行航班次数,
+    平均单架次乘客数,
+    平均单架次营收
+FROM ModelStats
+ORDER BY 机型总营收 DESC;  -- 按总营收排序（可替换为其他指标）
+-- SQLBook: Code
+WITH TransRouteSales AS (
+    SELECT
+        CONCAT(a_dep.ariport,'→',a_trans.ariport,'→',a_arr.ariport) AS 中转航线,
+        SUM(fact.Price) AS [2021中转总营收]
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_Airport a_dep ON fact.Departure_airportID = a_dep.AirportID
+    JOIN DW_Dim_Airport a_trans ON fact.Transit_airportID = a_trans.AirportID
+    JOIN DW_Dim_Airport a_arr ON fact.Landing_airportID = a_arr.AirportID
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    WHERE dr.Year=2021 AND fact.Transit_airportID <> -1
+    GROUP BY CONCAT(a_dep.ariport,'→',a_trans.ariport,'→',a_arr.ariport)
+)
+SELECT TOP 10
+    中转航线,
+    [2021中转总营收],
+    ROW_NUMBER() OVER (ORDER BY [2021中转总营收] DESC) AS 中转营收排名
+FROM TransRouteSales
+ORDER BY 中转营收排名;
+-- SQLBook: Markup
+Moving Avg
+-- SQLBook: Code
+WITH MonthlyTransSales AS (
+    -- 步骤1：计算2021年各月中转营收（基础数据）
+    SELECT
+        dr.Month AS 月份,
+        SUM(fact.Price) AS 月度中转营收
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    WHERE dr.Year=2021 AND fact.Transit_airportID <> -1  -- 2021年+有中转
+    GROUP BY dr.Month
+)
+-- 步骤2：计算移动平均（不足3个月置0）+ 偏离率
+SELECT
+    月份,
+    月度中转营收,
+    -- 核心调整：1/2月移动平均=0，3月及以后正常计算
+    CASE 
+        WHEN 月份 < 3 THEN 0  -- 不足3个月（1、2月）置0
+        ELSE AVG(月度中转营收) OVER (ORDER BY 月份 ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)
+    END AS [3个月移动平均营收],
+    -- 偏离率：移动平均为0时置0（避免除以0报错）
+    CASE 
+        WHEN 月份 < 3 THEN 0.00
+        WHEN AVG(月度中转营收) OVER (ORDER BY 月份 ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) = 0 THEN 0.00
+        ELSE ROUND(
+            (月度中转营收 - AVG(月度中转营收) OVER (ORDER BY 月份 ROWS BETWEEN 2 PRECEDING AND CURRENT ROW))*1.0
+            / AVG(月度中转营收) OVER (ORDER BY 月份 ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)*100,
+            2
+        )
+    END AS [偏离率(%)]
+FROM MonthlyTransSales
+ORDER BY 月份;
+-- SQLBook: Code
+WITH WeeklyFlow AS (
+    SELECT
+        DATEPART(WEEK, dr.Date) AS 周数,
+        COUNT(DISTINCT fact.MEMBER_NO) AS 周度客流
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    WHERE dr.Year = 2021
+    GROUP BY DATEPART(WEEK, dr.Date)
+)
+SELECT
+    周数,
+    周度客流,
+    CASE 
+        WHEN ROW_NUMBER() OVER (ORDER BY 周数) = 1 THEN 0  -- 第一条记录的移动平均设为0
+        ELSE AVG(周度客流) OVER (ORDER BY 周数 ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+    END AS [2周移动平均]
+FROM WeeklyFlow
+ORDER BY 周数;
+-- SQLBook: Code
+
+-- SQLBook: Markup
+Top N
+-- SQLBook: Code
+WITH RouteSales AS (
+    SELECT
+        CONCAT(a_dep.city,'→',a_arr.city) AS 航线,
+        SUM(fact.Price) AS [2021总营收]
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID
+    JOIN DW_Dim_Airport a_dep ON fact.Departure_airportID = a_dep.AirportID
+    JOIN DW_Dim_Airport a_arr ON fact.Landing_airportID = a_arr.AirportID
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    WHERE dr.Year=2021 AND s.CabinClass='Y'
+    GROUP BY CONCAT(a_dep.city,'→',a_arr.city)
+)
+SELECT TOP 10
+    航线,
+    [2021总营收],
+    ROW_NUMBER() OVER (ORDER BY [2021总营收] DESC) AS 排名
+FROM RouteSales
+ORDER BY 排名;
+-- SQLBook: Code
+WITH AgeRepurchase AS (
+    SELECT
+        CASE WHEN ps.PassengerAge <=25 THEN '≤25'
+             WHEN ps.PassengerAge BETWEEN 26 AND 45 THEN '26-45'
+             ELSE '>45' END AS 年龄段,
+        ROUND(COUNT(DISTINCT CASE WHEN fact2.MEMBER_NO IS NOT NULL THEN fact.MEMBER_NO ELSE NULL END)*1.0/COUNT(DISTINCT fact.MEMBER_NO)*100,2) AS [复购率(%)]
+    FROM Fact_FlightTicket fact
+    LEFT JOIN Fact_FlightTicket fact2 ON fact.MEMBER_NO = fact2.MEMBER_NO AND fact2.TicketID <> fact.TicketID
+    JOIN DW_Dim_Passenger ps ON fact.MEMBER_NO = ps.PassengerID
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    WHERE dr.Year=2021 
+    GROUP BY CASE WHEN ps.PassengerAge <=25 THEN '≤25' WHEN ps.PassengerAge BETWEEN 26 AND 45 THEN '26-45' ELSE '>45' END
+)
+SELECT TOP 5
+    年龄段,
+    [复购率(%)],
+    RANK() OVER (ORDER BY [复购率(%)] DESC) AS 排名
+FROM AgeRepurchase
+ORDER BY 排名;
+-- SQLBook: Code
+WITH TransAirportLoad AS (
+    SELECT
+        a_trans.ariport AS 中转机场,
+        a_trans.city AS 中转城市,
+        COUNT(DISTINCT fact.MEMBER_NO) AS 中转乘客数,
+        COUNT(DISTINCT fact.TicketID) AS 航班执行次数
+    FROM Fact_FlightTicket fact
+    JOIN DW_Dim_Seat s ON fact.CabinID = s.CabinID
+    JOIN DW_Dim_Airport a_trans ON fact.Transit_airportID = a_trans.AirportID
+    JOIN DW_Dim_DateRange dr ON fact.departureDateID = dr.DateRangeID
+    WHERE dr.Year=2021 AND s.CabinClass='Y' AND fact.Transit_airportID <> -1
+    GROUP BY a_trans.ariport, a_trans.city
+)
+SELECT TOP 5
+    中转机场,
+    中转城市,
+    中转乘客数,
+    航班执行次数,
+    RANK() OVER (ORDER BY 中转乘客数 DESC) AS 排名
+FROM TransAirportLoad
+ORDER BY 排名;
